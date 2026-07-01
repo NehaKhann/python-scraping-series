@@ -14,6 +14,7 @@ Every project includes working Python code + a Streamlit UI + a written breakdow
 | 01 | [LinkedIn Job Scraper](./day01_linkedin_jobs/) | httpx + BeautifulSoup4 + Streamlit | ✅ Done |
 | 02 | [Book Price Tracker](./day02_scrapy/) | Scrapy + Streamlit | ✅ Done |
 | 03 | [Trustpilot Review Scraper](./day03_curl_cffi/) | curl_cffi + BeautifulSoup4 + Streamlit | ✅ Done |
+| 🎁 | [Scrapy + curl_cffi Combined](./bonus_scrapy_curl_cffi/) | Scrapy + scrapy-impersonate + curl_cffi + Streamlit | ✅ Done |
 | 04 | AI-powered crawler | crawl4ai | 🔜 Coming |
 | 05 | Agent-based scraping | browser-use | 🔜 Coming |
 | 06 | Auto-detect scraper | autoscraper | 🔜 Coming |

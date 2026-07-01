@@ -24,6 +24,15 @@ day*/*.csv
 # Internal planning — not for public
 week-plan.md
 
+# LinkedIn & Medium publishing files — private, not for GitHub
+**/article_medium.html
+**/article.md
+**/linkedin_post.md
+**/linkedin_article.md
+**/linkedin_carousel.html
+**/linkedin_infographic.html
+**/*.png
+
 # Streamlit
 .streamlit/
 
