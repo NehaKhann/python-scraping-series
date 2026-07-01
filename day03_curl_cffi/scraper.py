@@ -1,35 +1,30 @@
 """
-Day 3 — G2 Review Scraper
-Stack: curl_cffi (browser impersonation) + BeautifulSoup4
+Day 3 — Cloudflare Bypass with curl_cffi
+Target: scrapingcourse.com/cloudflare-challenge
+Stack: curl_cffi + BeautifulSoup4
 
-The problem this solves:
-  httpx / requests → 403 Forbidden (TLS fingerprint detected as bot)
-  curl_cffi        → 200 OK (impersonates Chrome's exact TLS fingerprint)
+This site is specifically designed to demonstrate Cloudflare TLS bypass.
+httpx gets blocked. curl_cffi (impersonating Chrome) gets through.
 
-Originally targeted Trustpilot — but Trustpilot uses Cloudflare Bot Management,
-which goes beyond TLS fingerprinting into JS challenges and behaviour analysis.
-curl_cffi can't solve that. Switched to G2.com which uses standard Cloudflare.
+What curl_cffi does:
+  - Impersonates Chrome's exact TLS fingerprint
+  - Bypasses standard Cloudflare protection
 
 What curl_cffi does NOT do:
-  - Execute JavaScript (that's Playwright, Day 8)
-  - Bypass Cloudflare Bot Management (Trustpilot, some banking sites)
-  - Bypass CAPTCHA challenges
+  - Execute JavaScript (Playwright does that — Day 8)
+  - Bypass Cloudflare Bot Management (Trustpilot, G2 use this)
+  - Bypass CAPTCHAs
 
 Run:
-  python scraper.py --product notion --pages 3
-  python scraper.py --product slack --pages 1
-  python scraper.py --product figma --pages 2
+  python scraper.py
 """
 
-import argparse
 import json
 import csv
 import time
 import random
-import re
 from dataclasses import dataclass, asdict
 from typing import Optional, Callable
-from datetime import datetime
 
 from curl_cffi import requests as cffi_requests
 from bs4 import BeautifulSoup
@@ -37,17 +32,16 @@ from bs4 import BeautifulSoup
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-BASE_URL  = "https://www.g2.com/products/{product}/reviews"
-PAGE_URL  = "https://www.g2.com/products/{product}/reviews?page={page}"
-HOME_URL  = "https://www.g2.com"
-DELAY_MIN = 1.5
-DELAY_MAX = 3.0
+URL       = "https://www.scrapingcourse.com/cloudflare-challenge"
+DELAY_MIN = 1.0
+DELAY_MAX = 2.5
 
-# Try newest first — Cloudflare blocklists old fingerprints over time.
+# Try newest Chrome version first — Cloudflare blocklists old ones over time
 IMPERSONATE_VERSIONS = ["chrome131", "chrome124", "chrome120", "chrome110"]
 
+# Match Chrome's real headers — Cloudflare checks these too after TLS passes
 HEADERS = {
-    "Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language":           "en-US,en;q=0.9",
     "Cache-Control":             "max-age=0",
     "Sec-Ch-Ua":                 '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
@@ -60,215 +54,126 @@ HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 
-HEADERS_NAV = {
-    **HEADERS,
-    "Referer":        "https://www.g2.com/",
-    "Sec-Fetch-Site": "same-origin",
-}
-
 
 # ── Data model ────────────────────────────────────────────────────────────────
 
 @dataclass
-class Review:
-    reviewer: str
-    rating:   int     # 1–5
-    title:    str
-    body:     str
-    date:     str     # YYYY-MM-DD
-    verified: bool
-    product:  str
+class Product:
+    name:  str
+    price: str
+    image: str
 
 
-# ── Parsing ───────────────────────────────────────────────────────────────────
+# ── Scraper ───────────────────────────────────────────────────────────────────
 
-def _parse_reviews(soup: BeautifulSoup, product: str) -> list[Review]:
+def _find_working_session(log: Callable = print) -> Optional[cffi_requests.Session]:
     """
-    G2 uses Schema.org itemprop markup on review cards — standard HTML,
-    no JavaScript needed to read. Great for scraping.
-
-    Each review card looks like:
-      <div itemprop="review">
-        <span itemprop="author">John D.</span>
-        <meta itemprop="ratingValue" content="5">
-        <span itemprop="name">Great product</span>
-        <span itemprop="reviewBody">Love the integrations...</span>
-        <time itemprop="datePublished" datetime="2024-10-15">
-        <span class="verified">Verified User</span>
-      </div>
+    Try Chrome versions newest-first. Return the first session that gets 200.
+    If all fail — the site has stronger protection than TLS fingerprinting.
     """
-    reviews = []
+    for version in IMPERSONATE_VERSIONS:
+        log(f"Trying impersonate={version}...")
+        try:
+            session = cffi_requests.Session(impersonate=version)
+            resp    = session.get(URL, headers=HEADERS, timeout=15)
+            log(f"  Status: {resp.status_code}")
+            if resp.status_code == 200:
+                log(f"  ✅ {version} works!")
+                return session
+            else:
+                log(f"  ❌ {version} blocked ({resp.status_code})")
+        except Exception as e:
+            log(f"  ❌ {version} error: {e}")
+    return None
 
-    cards = soup.find_all(attrs={"itemprop": "review"})
+
+def _parse_products(html: str) -> list[Product]:
+    """
+    Parse products from scrapingcourse.com/cloudflare-challenge.
+    The page lists products with name, price, and image.
+    """
+    soup     = BeautifulSoup(html, "html.parser")
+    products = []
+
+    # Products are in <li> cards — each has an image, name, and price
+    cards = soup.select("li.product, div.product, article")
     if not cards:
-        # Fallback: look for G2's article containers
-        cards = soup.find_all("div", attrs={"data-testid": "review"})
-    if not cards:
-        cards = soup.select("div[class*='paper'][class*='review'], article")
+        # Fallback: any element with a price-looking child
+        cards = soup.find_all(lambda tag: tag.find(string=lambda t: t and "$" in t))
 
     for card in cards:
-        # Author
-        author_el = card.find(attrs={"itemprop": "author"})
-        reviewer  = author_el.get_text(strip=True) if author_el else "Anonymous"
+        # Name
+        name_el = card.find(["h2", "h3", "h4", "a"], class_=lambda c: c and "name" in c.lower() if c else False)
+        if not name_el:
+            name_el = card.find(["h2", "h3", "h4"])
+        name = name_el.get_text(strip=True) if name_el else ""
 
-        # Rating — stored as a <meta> tag: <meta itemprop="ratingValue" content="5">
-        rating = 0
-        rating_el = card.find("meta", attrs={"itemprop": "ratingValue"})
-        if rating_el:
-            try:
-                rating = int(float(rating_el.get("content", 0)))
-            except (ValueError, TypeError):
-                pass
-        if not rating:
-            # Fallback: count filled star elements
-            filled = card.select("svg[class*='star'][class*='filled'], .star--filled, [class*='star-full']")
-            rating = min(len(filled), 5)
+        # Price
+        price_el = card.find(class_=lambda c: c and "price" in c.lower() if c else False)
+        if not price_el:
+            price_el = card.find(string=lambda t: t and "$" in t)
+        price = price_el.get_text(strip=True) if hasattr(price_el, "get_text") else (str(price_el).strip() if price_el else "")
 
-        # Title
-        title_el = card.find(attrs={"itemprop": "name"})
-        title    = title_el.get_text(strip=True) if title_el else ""
+        # Image
+        img    = card.find("img")
+        image  = img.get("src", "") if img else ""
 
-        # Body
-        body_el = card.find(attrs={"itemprop": "reviewBody"})
-        body    = body_el.get_text(strip=True) if body_el else ""
+        if name or price:
+            products.append(Product(name=name, price=price, image=image))
 
-        # Date
-        date    = ""
-        time_el = card.find("time", attrs={"itemprop": "datePublished"})
-        if time_el:
-            raw  = time_el.get("datetime", "")
-            date = raw[:10] if raw else ""
-        if not date:
-            time_el = card.find("time")
-            if time_el:
-                raw  = time_el.get("datetime", "")
-                date = raw[:10] if raw else ""
+    return products
 
-        # Verified
-        verified_text = card.get_text(separator=" ").lower()
-        verified      = "verified" in verified_text
-
-        if reviewer != "Anonymous" or title or body:
-            reviews.append(Review(
-                reviewer = reviewer,
-                rating   = rating,
-                title    = title,
-                body     = body,
-                date     = date,
-                verified = verified,
-                product  = product,
-            ))
-
-    return reviews
-
-
-def _get_total_pages(soup: BeautifulSoup) -> int:
-    """Find how many review pages exist."""
-    # G2 pagination: look for page number links
-    page_links = soup.find_all("a", href=re.compile(r"[?&]page=(\d+)"))
-    if page_links:
-        pages = []
-        for a in page_links:
-            m = re.search(r"page=(\d+)", a["href"])
-            if m:
-                pages.append(int(m.group(1)))
-        return max(pages) if pages else 1
-
-    # Fallback: look for "Next" button
-    if soup.find("a", string=re.compile(r"Next", re.I)):
-        return 99  # unknown max, caller will stop when empty
-
-    return 1
-
-
-def scrape_page(session, product: str, page: int, log: Callable = print) -> tuple[list[Review], int]:
-    url = BASE_URL.format(product=product) if page == 1 else PAGE_URL.format(product=product, page=page)
-    log(f"Fetching page {page}: {url}")
-
-    resp = session.get(url, headers=HEADERS_NAV, timeout=15)
-
-    if resp.status_code != 200:
-        log(f"  ❌ Status {resp.status_code} — skipping page {page}")
-        return [], 0
-
-    soup        = BeautifulSoup(resp.text, "html.parser")
-    reviews     = _parse_reviews(soup, product)
-    total_pages = _get_total_pages(soup)
-
-    log(f"  ✅ Page {page}: {len(reviews)} reviews (total pages: {total_pages})")
-    return reviews, total_pages
-
-
-# ── Main scrape function ──────────────────────────────────────────────────────
 
 def scrape(
-    product:           str,
-    max_pages:         int            = 3,
-    output_json:       Optional[str]  = "reviews.json",
-    output_csv:        Optional[str]  = "reviews.csv",
+    output_json:       Optional[str]  = "products.json",
+    output_csv:        Optional[str]  = "products.csv",
     progress_callback: Optional[Callable] = None,
     log:               Callable       = print,
 ) -> list[dict]:
     """
-    Scrape G2 reviews for a product.
-
-    Args:
-        product:   G2 product slug, e.g. "notion", "slack", "figma"
-        max_pages: how many review pages to fetch (~10 reviews each)
+    Scrape scrapingcourse.com/cloudflare-challenge.
+    Demonstrates: httpx fails (TLS fingerprint) — curl_cffi succeeds.
     """
-    log(f"Starting G2 scrape: {product}")
+    log("=" * 50)
+    log("Day 3 — curl_cffi TLS Fingerprint Demo")
+    log("=" * 50)
 
-    # ── Find a working impersonate version ────────────────────────────────────
-    # We visit the G2 homepage first (warm-up) to get the Cloudflare session
-    # cookie. Without this, even the right TLS fingerprint can get a 403
-    # because Cloudflare sees no prior session for this IP.
-    session = None
-    for version in IMPERSONATE_VERSIONS:
-        log(f"Trying impersonate={version}...")
-        try:
-            s       = cffi_requests.Session(impersonate=version)
-            warmup  = s.get(HOME_URL, headers=HEADERS, timeout=10)
-            log(f"  Warm-up (g2.com): {warmup.status_code}")
-            if warmup.status_code == 200:
-                session = s
-                log(f"  ✅ {version} works")
-                time.sleep(random.uniform(1.0, 2.0))
-                break
-            else:
-                log(f"  ❌ {version} blocked ({warmup.status_code})")
-        except Exception as e:
-            log(f"  ❌ {version} error: {e}")
+    # ── Step 1: Show that httpx fails ────────────────────────────────────────
+    log("\n[1/3] Testing httpx (standard Python HTTP)...")
+    try:
+        import httpx
+        resp = httpx.get(URL, timeout=10)
+        log(f"  httpx status: {resp.status_code}")
+        if resp.status_code == 403:
+            log("  ❌ httpx blocked — TLS fingerprint detected as bot")
+        else:
+            log(f"  httpx status: {resp.status_code}")
+    except Exception as e:
+        log(f"  httpx error: {e}")
+
+    # ── Step 2: Try curl_cffi ─────────────────────────────────────────────────
+    log("\n[2/3] Testing curl_cffi (Chrome TLS impersonation)...")
+    time.sleep(random.uniform(1.0, 1.5))
+
+    session = _find_working_session(log)
 
     if session is None:
-        log("❌ All versions blocked. Try upgrading curl_cffi: pip install --upgrade curl_cffi")
+        log("\n❌ curl_cffi also blocked.")
+        log("   This site may have upgraded beyond standard TLS checking.")
+        log("   Solution: Playwright (Day 8) — runs a real browser.")
         return []
 
-    # ── Scrape pages ──────────────────────────────────────────────────────────
-    all_reviews: list[Review] = []
-
-    reviews, total_pages = scrape_page(session, product, 1, log)
-    all_reviews.extend(reviews)
+    # ── Step 3: Parse the page ────────────────────────────────────────────────
+    log("\n[3/3] Parsing products from the page...")
+    resp     = session.get(URL, headers=HEADERS, timeout=15)
+    products = _parse_products(resp.text)
 
     if progress_callback:
-        progress_callback(1, min(max_pages, total_pages), "Scraped page 1")
+        progress_callback(1, 1, f"Found {len(products)} products")
 
-    pages_to_scrape = min(max_pages, total_pages)
+    log(f"\n✅ Done — {len(products)} products scraped")
 
-    for page in range(2, pages_to_scrape + 1):
-        if not reviews:
-            log("No reviews on previous page — stopping early")
-            break
-        delay = random.uniform(DELAY_MIN, DELAY_MAX)
-        log(f"Waiting {delay:.1f}s...")
-        time.sleep(delay)
-        reviews, _ = scrape_page(session, product, page, log)
-        all_reviews.extend(reviews)
-        if progress_callback:
-            progress_callback(page, pages_to_scrape, f"Scraped page {page}/{pages_to_scrape}")
-
-    log(f"\n✅ Done — {len(all_reviews)} reviews for {product}")
-
-    dicts = [asdict(r) for r in all_reviews]
+    dicts = [asdict(p) for p in products]
 
     if output_json:
         with open(output_json, "w", encoding="utf-8") as f:
@@ -288,14 +193,4 @@ def scrape(
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Scrape G2 reviews")
-    parser.add_argument("--product", default="notion",  help="G2 product slug (e.g. notion, slack, figma)")
-    parser.add_argument("--pages",   type=int, default=3, help="Max pages to scrape")
-    args = parser.parse_args()
-
-    scrape(
-        product     = args.product,
-        max_pages   = args.pages,
-        output_json = f"reviews_{args.product}.json",
-        output_csv  = f"reviews_{args.product}.csv",
-    )
+    scrape()
