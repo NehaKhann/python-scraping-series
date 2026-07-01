@@ -30,16 +30,6 @@ Every project includes working Python code + a Streamlit UI + a written breakdow
 
 ---
 
-## Articles
-
-Each day has three pieces of content:
-
-- **Medium article** — technical deep-dive with full code
-- **LinkedIn Article** — story-driven breakdown of mistakes and fixes
-- **LinkedIn Post** — short feed post linking both
-
----
-
 ## Structure
 
 ```
