@@ -12,19 +12,20 @@ Every project includes working Python code + a Streamlit UI + a written breakdow
 | Day | Project | Stack | Status |
 |-----|---------|-------|--------|
 | 01 | [LinkedIn Job Scraper](./day01_linkedin_jobs/) | httpx + BeautifulSoup4 + Streamlit | ✅ Done |
-| 02 | E-commerce Price Tracker | Scrapy | 🔜 Coming |
+| 02 | [Book Price Tracker](./day02_scrapy/) | Scrapy + Streamlit | ✅ Done |
 | 03 | JavaScript-rendered pages | curl-impersonate | 🔜 Coming |
 | 04 | AI-powered crawler | crawl4ai | 🔜 Coming |
 | 05 | Agent-based scraping | browser-use | 🔜 Coming |
 | 06 | Auto-detect scraper | autoscraper | 🔜 Coming |
 | 07 | Managed scraping API | Firecrawl | 🔜 Coming |
 | 08 | Dynamic pages | Playwright | 🔜 Coming |
-| 09 | Cloudflare bypass | cloudscraper | 🔜 Coming |
+| 09 | Cloudflare bypass (cookies + request mirroring) | CloudflareBypassForScraping | 🔜 Coming |
 | 10 | Large-scale crawling | crawlee-python | 🔜 Coming |
 | 11 | Markdown from any URL | markitdown | 🔜 Coming |
 | 12 | News article extraction | newspaper4k | 🔜 Coming |
 | 13 | CAPTCHA solving | 2captcha | 🔜 Coming |
 | 14 | Rotating proxies | proxy rotator | 🔜 Coming |
+| 15 | Lightweight headless browser for AI agents | Obscura (Rust) | 🔜 Coming |
 
 ---
 
