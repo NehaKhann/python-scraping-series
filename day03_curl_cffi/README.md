@@ -1,27 +1,29 @@
-# Day 3 — Trustpilot Review Scraper (curl_cffi)
+# Day 3 — G2 Review Scraper (curl_cffi)
 
 > **Stack:** curl_cffi · BeautifulSoup4 · Streamlit  
-> **Target:** www.trustpilot.com  
+> **Target:** www.g2.com (software reviews)  
 > **Series:** [Python Scraping Series](../)
 
-Scrapes Trustpilot reviews for any company using `curl_cffi` — a Python binding for
-curl-impersonate that bypasses TLS fingerprint detection.
+Scrapes G2 software reviews using `curl_cffi` — a Python binding for curl-impersonate that bypasses TLS fingerprint detection.
 
 ## What This Is About
 
-Trustpilot uses Cloudflare to check the TLS fingerprint of every incoming request.
-Python's `httpx` sends a fingerprint that looks like a bot → `403 Forbidden`.
-`curl_cffi` sends Chrome's exact TLS fingerprint → `200 OK`.
+Sites protected by Cloudflare check your **TLS fingerprint** — a signature your HTTP client sends during the connection handshake, before any request is made. Python's `httpx` has a fingerprint that looks like a bot. `curl_cffi` sends Chrome's exact fingerprint instead.
 
-This is **not** JavaScript rendering. It's purely about the TLS handshake.
+> **Why not Trustpilot?** Originally targeted Trustpilot, but they use **Cloudflare Bot Management** — a different tier that also runs JavaScript challenges and behaviour analysis. curl_cffi only handles the TLS layer, not JS challenges. Switched to G2 (standard Cloudflare). Documented as an honest lesson in the article.
 
 ## Files
 
 ```
 day03_curl_cffi/
-├── scraper.py          ← core scraper: curl_cffi session + __NEXT_DATA__ parser
-├── app.py              ← Streamlit UI with filters, charts, export
-└── requirements.txt
+├── scraper.py        ← curl_cffi session, homepage warm-up, itemprop parser
+├── app.py            ← Streamlit UI: product input, charts, filters, export
+├── requirements.txt
+├── article.md        ← Medium article
+├── linkedin_article.md
+├── linkedin_post.md
+├── linkedin_carousel.html   ← 7 slides, 1080x1080px
+└── linkedin_infographic.html ← single tall infographic, 1080px wide
 ```
 
 ## Quick Start
@@ -30,30 +32,48 @@ day03_curl_cffi/
 cd day03_curl_cffi
 pip install -r requirements.txt
 
-# Terminal
-python scraper.py --company apple.com --pages 3
-python scraper.py --company airbnb.com --pages 1
+# Terminal — scrape reviews for a product
+python scraper.py --product notion --pages 3
+python scraper.py --product slack --pages 1
+python scraper.py --product figma --pages 2
 
 # Streamlit UI
 streamlit run app.py
 ```
 
-## What Broke
+G2 product slugs come from the URL: `g2.com/products/SLUG/reviews`
 
-**Problem 1 — httpx returns 403 on Trustpilot**  
-Cloudflare identifies Python's default TLS fingerprint and blocks it.  
-Fix: use `curl_cffi` with `impersonate="chrome120"` — impersonates Chrome's exact TLS cipher suite and HTTP/2 settings.
+## What Broke (3 real mistakes)
 
-**Problem 2 — Wrong impersonate version → still blocked**  
-`impersonate="chrome99"` was too old; newer Cloudflare rules catch it.  
-Fix: use a recent version like `chrome120`. Check `curl_cffi.requests.DEFAULT_CHROME` for the current default.
+**Problem 1 — httpx returns 403**  
+Cloudflare identifies Python's TLS fingerprint and blocks it before any HTTP data is sent.  
+Fix: `curl_cffi` with `impersonate="chrome124"` — sends Chrome's exact cipher suites and HTTP/2 settings.
 
-**Problem 3 — curl_cffi gets in but infinite scroll doesn't load**  
-Trustpilot loads initial reviews server-side (in `__NEXT_DATA__` JSON). Pages 2+ work with `?page=N`.  
-But some companies with fewer reviews show a JS-driven "load more" button instead of pagination.  
-For those, you need Playwright (Day 8). curl_cffi alone can't execute JavaScript.
+**Problem 2 — Wrong target (Trustpilot uses Bot Management, not standard Cloudflare)**  
+curl_cffi bypasses TLS fingerprinting. Trustpilot's Cloudflare Bot Management also runs JS challenges — curl_cffi can't execute JavaScript, so all Chrome versions returned 403.  
+Fix: switched to G2.com which uses standard Cloudflare. TLS impersonation is enough.
+
+**Problem 3 — Hardcoded Chrome version broke when Cloudflare updated its blocklist**  
+`impersonate="chrome120"` stopped working after Cloudflare added it to the blocklist.  
+Fix: try multiple versions in sequence (`chrome131 → chrome124 → chrome120 → chrome110`), use the first that returns 200.
+
+## How Parsing Works
+
+G2 uses Schema.org `itemprop` markup on review cards — the same HTML annotation that lets Google show star ratings in search results. This means the review data is clean and labelled directly in the HTML:
+
+```html
+<div itemprop="review">
+  <span itemprop="author">John D.</span>
+  <meta itemprop="ratingValue" content="5">
+  <span itemprop="name">Best tool for our team</span>
+  <span itemprop="reviewBody">We've been using Notion for 2 years...</span>
+  <time itemprop="datePublished" datetime="2024-10-15">
+</div>
+```
+
+No JavaScript execution needed. No fragile CSS class selectors.
 
 ## Articles
 
-- Medium: [Day 3 — Trustpilot Review Scraper with curl_cffi] *(link after publish)*
-- LinkedIn: [What Actually Blocks Python Scrapers (and How curl_cffi Fixes It)] *(link after publish)*
+- Medium: [Day 3 — I Tried to Scrape Trustpilot. Cloudflare Had Other Plans.] *(link after publish)*
+- LinkedIn Article: [I Tried to Scrape Trustpilot. Here's Where That Plan Fell Apart.] *(link after publish)*

@@ -1,19 +1,24 @@
 """
-Day 3 — Trustpilot Review Scraper
+Day 3 — G2 Review Scraper
 Stack: curl_cffi (browser impersonation) + BeautifulSoup4
 
 The problem this solves:
-  httpx / requests → 403 Forbidden on Trustpilot
-  curl_cffi        → 200 OK (impersonates Chrome's TLS fingerprint)
+  httpx / requests → 403 Forbidden (TLS fingerprint detected as bot)
+  curl_cffi        → 200 OK (impersonates Chrome's exact TLS fingerprint)
+
+Originally targeted Trustpilot — but Trustpilot uses Cloudflare Bot Management,
+which goes beyond TLS fingerprinting into JS challenges and behaviour analysis.
+curl_cffi can't solve that. Switched to G2.com which uses standard Cloudflare.
 
 What curl_cffi does NOT do:
   - Execute JavaScript (that's Playwright, Day 8)
+  - Bypass Cloudflare Bot Management (Trustpilot, some banking sites)
   - Bypass CAPTCHA challenges
-  - Help with login-required pages
 
 Run:
-  python scraper.py --company apple.com --pages 3
-  python scraper.py --company airbnb.com --pages 1
+  python scraper.py --product notion --pages 3
+  python scraper.py --product slack --pages 1
+  python scraper.py --product figma --pages 2
 """
 
 import argparse
@@ -21,6 +26,7 @@ import json
 import csv
 import time
 import random
+import re
 from dataclasses import dataclass, asdict
 from typing import Optional, Callable
 from datetime import datetime
@@ -31,247 +37,237 @@ from bs4 import BeautifulSoup
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-BASE_URL   = "https://www.trustpilot.com/review/{company}?page={page}"
-DELAY_MIN  = 1.5
-DELAY_MAX  = 3.0
+BASE_URL  = "https://www.g2.com/products/{product}/reviews"
+PAGE_URL  = "https://www.g2.com/products/{product}/reviews?page={page}"
+HOME_URL  = "https://www.g2.com"
+DELAY_MIN = 1.5
+DELAY_MAX = 3.0
 
-# Impersonate a specific Chrome version — must be recent.
-# Older versions (chrome99, chrome101) still get blocked on Cloudflare sites.
-IMPERSONATE = "chrome120"
+# Try newest first — Cloudflare blocklists old fingerprints over time.
+IMPERSONATE_VERSIONS = ["chrome131", "chrome124", "chrome120", "chrome110"]
+
+HEADERS = {
+    "Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language":           "en-US,en;q=0.9",
+    "Cache-Control":             "max-age=0",
+    "Sec-Ch-Ua":                 '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    "Sec-Ch-Ua-Mobile":          "?0",
+    "Sec-Ch-Ua-Platform":        '"Windows"',
+    "Sec-Fetch-Dest":            "document",
+    "Sec-Fetch-Mode":            "navigate",
+    "Sec-Fetch-Site":            "none",
+    "Sec-Fetch-User":            "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+HEADERS_NAV = {
+    **HEADERS,
+    "Referer":        "https://www.g2.com/",
+    "Sec-Fetch-Site": "same-origin",
+}
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
 
 @dataclass
 class Review:
-    reviewer:     str
-    country:      str
-    rating:       int           # 1–5
-    title:        str
-    body:         str
-    date:         str           # ISO format
-    verified:     bool
-    helpful:      int
-    company:      str
+    reviewer: str
+    rating:   int     # 1–5
+    title:    str
+    body:     str
+    date:     str     # YYYY-MM-DD
+    verified: bool
+    product:  str
 
 
-# ── Core scraper ──────────────────────────────────────────────────────────────
+# ── Parsing ───────────────────────────────────────────────────────────────────
 
-def scrape_page(session, company: str, page: int, log: Callable = print) -> tuple[list[Review], int]:
+def _parse_reviews(soup: BeautifulSoup, product: str) -> list[Review]:
     """
-    Fetch one page of reviews.
-    Returns (reviews_list, total_pages).
-    """
-    url = BASE_URL.format(company=company, page=page)
-    log(f"Fetching page {page}: {url}")
+    G2 uses Schema.org itemprop markup on review cards — standard HTML,
+    no JavaScript needed to read. Great for scraping.
 
-    resp = session.get(url, timeout=15)
-
-    if resp.status_code != 200:
-        log(f"  ❌ Status {resp.status_code} — skipping page {page}")
-        return [], 0
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-
-    # ── Strategy 1: extract from Next.js __NEXT_DATA__ JSON (preferred) ──────
-    # Trustpilot is a Next.js app. For SEO, it embeds review data in JSON
-    # inside a <script id="__NEXT_DATA__"> tag — no JavaScript needed to read it.
-    next_tag = soup.find("script", id="__NEXT_DATA__")
-    if next_tag:
-        try:
-            data = json.loads(next_tag.string)
-            page_props = data.get("props", {}).get("pageProps", {})
-
-            raw_reviews   = page_props.get("reviews", [])
-            total_pages   = (
-                page_props
-                .get("filters", {})
-                .get("pagination", {})
-                .get("totalPages", 1)
-            )
-
-            if not raw_reviews:
-                # Alternate JSON path some Trustpilot versions use
-                raw_reviews = page_props.get("businessUnit", {}).get("reviews", [])
-
-            reviews = [_parse_next_review(r, company) for r in raw_reviews]
-            log(f"  ✅ Page {page}: {len(reviews)} reviews via __NEXT_DATA__ (total pages: {total_pages})")
-            return reviews, total_pages
-
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            log(f"  ⚠️  __NEXT_DATA__ parse failed ({e}) — falling back to HTML")
-
-    # ── Strategy 2: parse HTML directly (fallback) ────────────────────────────
-    reviews, total_pages = _parse_html(soup, company)
-    log(f"  ✅ Page {page}: {len(reviews)} reviews via HTML fallback (total pages: {total_pages})")
-    return reviews, total_pages
-
-
-def _parse_next_review(raw: dict, company: str) -> Review:
-    """Parse one review from the __NEXT_DATA__ JSON blob."""
-    consumer   = raw.get("consumer", {})
-    dates      = raw.get("dates", {})
-    labels     = raw.get("labels", {})
-    verification = labels.get("verification", {})
-
-    # Date — ISO string from Trustpilot, trim to date only
-    raw_date = dates.get("publishedDate", "")
-    try:
-        date = datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date().isoformat()
-    except Exception:
-        date = raw_date[:10] if raw_date else ""
-
-    return Review(
-        reviewer  = consumer.get("displayName", "Anonymous"),
-        country   = consumer.get("countryCode", ""),
-        rating    = int(raw.get("stars", 0)),
-        title     = raw.get("title", ""),
-        body      = raw.get("text", ""),
-        date      = date,
-        verified  = verification.get("verificationLevel", "") in ("verified", "stripe_verified"),
-        helpful   = raw.get("likes", 0),
-        company   = company,
-    )
-
-
-def _parse_html(soup: BeautifulSoup, company: str) -> tuple[list[Review], int]:
-    """
-    Fallback: parse review cards directly from HTML.
-    Trustpilot's CSS classes are obfuscated (hashed), so we use
-    structural selectors instead.
+    Each review card looks like:
+      <div itemprop="review">
+        <span itemprop="author">John D.</span>
+        <meta itemprop="ratingValue" content="5">
+        <span itemprop="name">Great product</span>
+        <span itemprop="reviewBody">Love the integrations...</span>
+        <time itemprop="datePublished" datetime="2024-10-15">
+        <span class="verified">Verified User</span>
+      </div>
     """
     reviews = []
 
-    # Each review is in an <article> with a data attribute
-    cards = soup.find_all("article", attrs={"data-service-review-card-paper": True})
+    cards = soup.find_all(attrs={"itemprop": "review"})
     if not cards:
-        # Try alternate container
-        cards = soup.select("article[class*='reviewCard']") or soup.find_all("article")
+        # Fallback: look for G2's article containers
+        cards = soup.find_all("div", attrs={"data-testid": "review"})
+    if not cards:
+        cards = soup.select("div[class*='paper'][class*='review'], article")
 
     for card in cards:
-        # Rating — look for <img alt="Rated X out of 5 stars">
+        # Author
+        author_el = card.find(attrs={"itemprop": "author"})
+        reviewer  = author_el.get_text(strip=True) if author_el else "Anonymous"
+
+        # Rating — stored as a <meta> tag: <meta itemprop="ratingValue" content="5">
         rating = 0
-        img = card.find("img", alt=lambda a: a and "out of 5 stars" in a)
-        if img:
+        rating_el = card.find("meta", attrs={"itemprop": "ratingValue"})
+        if rating_el:
             try:
-                rating = int(img["alt"].split()[1])
-            except Exception:
+                rating = int(float(rating_el.get("content", 0)))
+            except (ValueError, TypeError):
                 pass
+        if not rating:
+            # Fallback: count filled star elements
+            filled = card.select("svg[class*='star'][class*='filled'], .star--filled, [class*='star-full']")
+            rating = min(len(filled), 5)
 
-        # Stars from data attribute if available
-        star_div = card.find(attrs={"data-service-review-rating": True})
-        if star_div:
-            try:
-                rating = int(star_div["data-service-review-rating"])
-            except Exception:
-                pass
+        # Title
+        title_el = card.find(attrs={"itemprop": "name"})
+        title    = title_el.get_text(strip=True) if title_el else ""
 
-        # Reviewer name
-        reviewer = ""
-        name_el = card.find(attrs={"data-consumer-name-typography": True})
-        if name_el:
-            reviewer = name_el.get_text(strip=True)
-
-        # Review title
-        title = ""
-        title_el = card.find(attrs={"data-service-review-title-typography": True})
-        if title_el:
-            title = title_el.get_text(strip=True)
-
-        # Review body
-        body = ""
-        body_el = card.find(attrs={"data-service-review-text-typography": True})
-        if body_el:
-            body = body_el.get_text(strip=True)
+        # Body
+        body_el = card.find(attrs={"itemprop": "reviewBody"})
+        body    = body_el.get_text(strip=True) if body_el else ""
 
         # Date
-        date = ""
-        time_el = card.find("time")
+        date    = ""
+        time_el = card.find("time", attrs={"itemprop": "datePublished"})
         if time_el:
-            raw_date = time_el.get("datetime", "")
-            date = raw_date[:10] if raw_date else ""
+            raw  = time_el.get("datetime", "")
+            date = raw[:10] if raw else ""
+        if not date:
+            time_el = card.find("time")
+            if time_el:
+                raw  = time_el.get("datetime", "")
+                date = raw[:10] if raw else ""
 
         # Verified
-        verified = bool(card.find(string=lambda t: t and "verified" in t.lower()))
+        verified_text = card.get_text(separator=" ").lower()
+        verified      = "verified" in verified_text
 
-        if reviewer or title or body:
+        if reviewer != "Anonymous" or title or body:
             reviews.append(Review(
-                reviewer = reviewer or "Anonymous",
-                country  = "",
+                reviewer = reviewer,
                 rating   = rating,
                 title    = title,
                 body     = body,
                 date     = date,
                 verified = verified,
-                helpful  = 0,
-                company  = company,
+                product  = product,
             ))
 
-    # Total pages — look for pagination
-    total_pages = 1
-    pagination = soup.find(attrs={"data-pagination-button-last-arrow": True})
-    if not pagination:
-        # Try href pattern: ?page=N
-        import re
-        last_page_links = soup.find_all("a", href=re.compile(r"[?&]page=(\d+)"))
-        if last_page_links:
-            pages = []
-            for a in last_page_links:
-                m = re.search(r"page=(\d+)", a["href"])
-                if m:
-                    pages.append(int(m.group(1)))
-            total_pages = max(pages) if pages else 1
+    return reviews
 
+
+def _get_total_pages(soup: BeautifulSoup) -> int:
+    """Find how many review pages exist."""
+    # G2 pagination: look for page number links
+    page_links = soup.find_all("a", href=re.compile(r"[?&]page=(\d+)"))
+    if page_links:
+        pages = []
+        for a in page_links:
+            m = re.search(r"page=(\d+)", a["href"])
+            if m:
+                pages.append(int(m.group(1)))
+        return max(pages) if pages else 1
+
+    # Fallback: look for "Next" button
+    if soup.find("a", string=re.compile(r"Next", re.I)):
+        return 99  # unknown max, caller will stop when empty
+
+    return 1
+
+
+def scrape_page(session, product: str, page: int, log: Callable = print) -> tuple[list[Review], int]:
+    url = BASE_URL.format(product=product) if page == 1 else PAGE_URL.format(product=product, page=page)
+    log(f"Fetching page {page}: {url}")
+
+    resp = session.get(url, headers=HEADERS_NAV, timeout=15)
+
+    if resp.status_code != 200:
+        log(f"  ❌ Status {resp.status_code} — skipping page {page}")
+        return [], 0
+
+    soup        = BeautifulSoup(resp.text, "html.parser")
+    reviews     = _parse_reviews(soup, product)
+    total_pages = _get_total_pages(soup)
+
+    log(f"  ✅ Page {page}: {len(reviews)} reviews (total pages: {total_pages})")
     return reviews, total_pages
 
 
 # ── Main scrape function ──────────────────────────────────────────────────────
 
 def scrape(
-    company:           str,
-    max_pages:         int   = 3,
-    output_json:       str   = "reviews.json",
-    output_csv:        str   = "reviews.csv",
+    product:           str,
+    max_pages:         int            = 3,
+    output_json:       Optional[str]  = "reviews.json",
+    output_csv:        Optional[str]  = "reviews.csv",
     progress_callback: Optional[Callable] = None,
-    log:               Callable = print,
+    log:               Callable       = print,
 ) -> list[dict]:
     """
-    Scrape reviews for a company from Trustpilot.
+    Scrape G2 reviews for a product.
 
     Args:
-        company:    e.g. "apple.com", "airbnb.com"
-        max_pages:  number of pages to scrape (≈10 reviews per page)
-        ...
+        product:   G2 product slug, e.g. "notion", "slack", "figma"
+        max_pages: how many review pages to fetch (~10 reviews each)
     """
-    log(f"Starting Trustpilot scrape: {company}")
-    log(f"Impersonating: {IMPERSONATE} (bypasses TLS fingerprint detection)")
+    log(f"Starting G2 scrape: {product}")
 
-    session = cffi_requests.Session(impersonate=IMPERSONATE)
+    # ── Find a working impersonate version ────────────────────────────────────
+    # We visit the G2 homepage first (warm-up) to get the Cloudflare session
+    # cookie. Without this, even the right TLS fingerprint can get a 403
+    # because Cloudflare sees no prior session for this IP.
+    session = None
+    for version in IMPERSONATE_VERSIONS:
+        log(f"Trying impersonate={version}...")
+        try:
+            s       = cffi_requests.Session(impersonate=version)
+            warmup  = s.get(HOME_URL, headers=HEADERS, timeout=10)
+            log(f"  Warm-up (g2.com): {warmup.status_code}")
+            if warmup.status_code == 200:
+                session = s
+                log(f"  ✅ {version} works")
+                time.sleep(random.uniform(1.0, 2.0))
+                break
+            else:
+                log(f"  ❌ {version} blocked ({warmup.status_code})")
+        except Exception as e:
+            log(f"  ❌ {version} error: {e}")
+
+    if session is None:
+        log("❌ All versions blocked. Try upgrading curl_cffi: pip install --upgrade curl_cffi")
+        return []
+
+    # ── Scrape pages ──────────────────────────────────────────────────────────
     all_reviews: list[Review] = []
 
-    # Scrape page 1 first to get total_pages
-    reviews, total_pages = scrape_page(session, company, 1, log)
+    reviews, total_pages = scrape_page(session, product, 1, log)
     all_reviews.extend(reviews)
 
     if progress_callback:
-        progress_callback(1, min(max_pages, total_pages), f"Scraped page 1")
+        progress_callback(1, min(max_pages, total_pages), "Scraped page 1")
 
     pages_to_scrape = min(max_pages, total_pages)
 
     for page in range(2, pages_to_scrape + 1):
+        if not reviews:
+            log("No reviews on previous page — stopping early")
+            break
         delay = random.uniform(DELAY_MIN, DELAY_MAX)
-        log(f"Waiting {delay:.1f}s before page {page}...")
+        log(f"Waiting {delay:.1f}s...")
         time.sleep(delay)
-
-        page_reviews, _ = scrape_page(session, company, page, log)
-        all_reviews.extend(page_reviews)
-
+        reviews, _ = scrape_page(session, product, page, log)
+        all_reviews.extend(reviews)
         if progress_callback:
             progress_callback(page, pages_to_scrape, f"Scraped page {page}/{pages_to_scrape}")
 
-    log(f"\n✅ Done — {len(all_reviews)} reviews scraped from {company}")
+    log(f"\n✅ Done — {len(all_reviews)} reviews for {product}")
 
-    # Save output
     dicts = [asdict(r) for r in all_reviews]
 
     if output_json:
@@ -279,13 +275,12 @@ def scrape(
             json.dump(dicts, f, indent=2, ensure_ascii=False)
         log(f"Saved → {output_json}")
 
-    if output_csv:
-        if dicts:
-            with open(output_csv, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=dicts[0].keys())
-                writer.writeheader()
-                writer.writerows(dicts)
-            log(f"Saved → {output_csv}")
+    if output_csv and dicts:
+        with open(output_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=dicts[0].keys())
+            writer.writeheader()
+            writer.writerows(dicts)
+        log(f"Saved → {output_csv}")
 
     return dicts
 
@@ -293,14 +288,14 @@ def scrape(
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Scrape Trustpilot reviews")
-    parser.add_argument("--company", default="apple.com", help="Company domain (e.g. apple.com)")
-    parser.add_argument("--pages",   type=int, default=3,  help="Max pages to scrape")
+    parser = argparse.ArgumentParser(description="Scrape G2 reviews")
+    parser.add_argument("--product", default="notion",  help="G2 product slug (e.g. notion, slack, figma)")
+    parser.add_argument("--pages",   type=int, default=3, help="Max pages to scrape")
     args = parser.parse_args()
 
     scrape(
-        company   = args.company,
-        max_pages = args.pages,
-        output_json = f"reviews_{args.company}.json",
-        output_csv  = f"reviews_{args.company}.csv",
+        product     = args.product,
+        max_pages   = args.pages,
+        output_json = f"reviews_{args.product}.json",
+        output_csv  = f"reviews_{args.product}.csv",
     )
