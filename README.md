@@ -54,39 +54,6 @@ python-scraping-series/
 
 ---
 
-## Running Day 1
-
-```bash
-cd day01_linkedin_jobs
-pip install -r requirements.txt
-
-# Streamlit UI
-streamlit run app.py
-
-# Terminal
-python scraper.py --keyword "Data Engineer" --location "United Kingdom" --max-jobs 25
-
-# Verify geoId for any location
-python find_geoid.py "Germany"
-```
-
----
-
-## Key Findings
-
-**LinkedIn's guest API (`jobs-guest`) only reliably covers US/UK markets.**
-
-For Saudi Arabia, UAE, Pakistan, India and most of the Middle East and South Asia:
-- Passing `location=Saudi Arabia` → returns UK jobs
-- Passing correct `geoId=101004847` → returns UK jobs
-- Hitting `sa.linkedin.com` instead of `www.linkedin.com` → same UK jobs
-- Hitting `pk.linkedin.com` for Pakistan → same UK jobs
-
-Country subdomains are DNS aliases pointing at the same backend. There is no URL workaround.
-Use LinkedIn directly (logged in) or a paid service like Apify/BrightData for those regions.
-
----
-
 ## Follow Along
 
 Articles published daily on [Medium](https://medium.com/@n.nehakhan333) and [LinkedIn](https://www.linkedin.com/in/neha-khan-b576b7219/).
