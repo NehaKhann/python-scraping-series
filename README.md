@@ -13,7 +13,7 @@ Every project includes working Python code + a Streamlit UI + a written breakdow
 |-----|---------|-------|--------|
 | 01 | [LinkedIn Job Scraper](./day01_linkedin_jobs/) | httpx + BeautifulSoup4 + Streamlit | ✅ Done |
 | 02 | [Book Price Tracker](./day02_scrapy/) | Scrapy + Streamlit | ✅ Done |
-| 03 | JavaScript-rendered pages | curl-impersonate | 🔜 Coming |
+| 03 | [Trustpilot Review Scraper](./day03_curl_cffi/) | curl_cffi + BeautifulSoup4 + Streamlit | ✅ Done |
 | 04 | AI-powered crawler | crawl4ai | 🔜 Coming |
 | 05 | Agent-based scraping | browser-use | 🔜 Coming |
 | 06 | Auto-detect scraper | autoscraper | 🔜 Coming |
@@ -50,7 +50,14 @@ python-scraping-series/
 │   ├── find_geoid.py       ← CLI tool to look up verified LinkedIn geoIds
 │   ├── test_subdomain.py   ← experiment: do country subdomains help?
 │   └── requirements.txt
-├── day02_scrapy/           ← coming Day 2
+├── day02_scrapy/
+│   ├── booktracker/        ← Scrapy project
+│   ├── app.py              ← Streamlit UI
+│   └── requirements.txt
+├── day03_curl_cffi/
+│   ├── scraper.py          ← curl_cffi session + __NEXT_DATA__ parser
+│   ├── app.py              ← Streamlit UI
+│   └── requirements.txt
 └── ...
 ```
 
