@@ -21,6 +21,9 @@ day*/jobs.csv
 day*/*.json
 day*/*.csv
 
+# Internal planning — not for public
+week-plan.md
+
 # Streamlit
 .streamlit/
 
