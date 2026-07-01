@@ -40,6 +40,12 @@ cd ..
 streamlit run app.py
 ```
 
+## Articles
+
+- Medium: [How to Build a Book Price Tracker with Scrapy](https://medium.com/@n.nehakhan333/how-to-build-a-book-price-tracker-with-scrapy-and-what-breaks-along-the-way-20a04324394d)
+- LinkedIn: [3 Things That Break When You Start with Scrapy](https://www.linkedin.com/feed/update/urn:li:activity:7478197520834416640/)
+
+
 ## What Broke
 
 **Problem 1 — ReactorNotRestartable**
@@ -55,7 +61,3 @@ Pipeline maps: `{"One": 1, "Two": 2, "Three": 3, "Four": 4, "Five": 5}`.
 books.toscrape.com UTF-8 issue doubles the £ sign.
 Pipeline strips both `"Â£"` and `"£"` before converting to float.
 
-## Articles
-
-- Medium: [How to Build a Book Price Tracker with Scrapy] *(link)*
-- LinkedIn: [3 Things That Break When You Start with Scrapy] *(link)*
